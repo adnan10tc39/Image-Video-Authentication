@@ -1,7 +1,12 @@
-# Forensics API — Quick Start (Simple README)
+# Forensics API — Quick Start
 
-A minimal guide to run the FastAPI that does **Segmentation** + **Classification** using Ultralytics YOLO.  
-_No extra fluff — just what you need._
+FastAPI service for **multimodal forensics** with 4 models:  
+- **AI vs Real Classification**  
+- **Background Tampering Detection** (YOLO cls + ELA)  
+- **Face Segmentation & Authentication** (real vs fake faces)  
+- **Forgery Types Segmentation** (splicing, copy-move, enhancement, removal)  
+
+Supports both **images** and **videos**.
 
 ---
 
@@ -22,171 +27,229 @@ pip install -r requirements.txt
 
 ```
 your_project/
-├─ api.py
-├─ requirements.txt
+├─ app.py                     # main FastAPI entrypoint (2 endpoints only)
+├─ backends/
+│  ├─ image_pipeline.py       # image logic
+│  ├─ video_pipeline.py       # video logic
+│  └─ utils.py                # shared helpers (model loading, ELA, etc)
 ├─ models/
-│  ├─ tempering_seg_best.pt       # segmentation model
-│  └─ real_vs_ai_best.pt          # classification model
-└─ .env                           # optional (see below)
+│  ├─ tempering_seg_best.pt        # segmentation model
+│  ├─ real_vs_ai_best.pt           # AI-vs-Real classification
+│  ├─ forgery_detector.pt          # forgery detection
+│  └─ background_forgery.pt        # background tampering (YOLO cls on ELA)
+├─ requirements.txt
+└─ .env
 ```
-
-- Put your weights inside **models/**.  
-- The API **auto-detects** correct files by actual task:  
-  - `segment` → segmentation model  
-  - `classify` → classification model
 
 ---
 
-## 3) Optional: .env (override defaults)
+## 3) .env (optional)
 
-Create a `.env` file if you want to customize:
+You can configure models and parameters here:
 
-```
-# Change models folder (optional)
+```env
+# Models directory
 MODELS_DIR=/abs/path/to/models
 
-# Pin filenames (optional, relative to MODELS_DIR)
+# Pin weights by filename (relative to MODELS_DIR)
 SEG_WEIGHTS_NAME=tempering_seg_best.pt
 CLS_WEIGHTS_NAME=real_vs_ai_best.pt
+FORG_WEIGHTS_NAME=forgery_detector.pt
+BG_WEIGHTS_NAME=background_forgery.pt
 
-# Or hard override with absolute/relative paths
-# SEG_WEIGHTS=/abs/path/to/seg.pt
-# CLS_WEIGHTS=/abs/path/to/cls.pt
+# Device: auto, cpu, or cuda:0
+DEVICE=auto
 ```
-
-> If the wrong file is picked, the API will raise a clear error at startup (e.g. “expected classify but got detect/segment”).
 
 ---
 
 ## 4) Run the server
 
 ```bash
-uvicorn api:app --host 0.0.0.0 --port 8000
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 Health check:
 
 ```bash
 curl http://localhost:8000/health
-# Expect: seg_task="segment", cls_task="classify"
 ```
 
 ---
 
-## 5) Endpoints (Postman / cURL)
+## 5) Endpoints
 
-All image/video endpoints expect **form-data** with key `file` (type: File).  
-Default parameters are sensible; you can override via form fields.
+### A) Image
 
-### A) Image — Classification
 ```
-POST /predict/image/cls
+POST /predict/image
 form-data:
   file: <image.jpg/png>
-  topk: 2            (optional)
-  min_prob: 0.15     (optional)
-  imgsz: 384         (optional)
-```
-**Response:**
-```json
-{ "topk": [ {"label":"Real","prob":0.93}, {"label":"Fake","prob":0.07} ] }
+  type_hint: "image or background"   # optional
 ```
 
-### B) Image — Segmentation
-```
-POST /predict/image/seg
-form-data:
-  file: <image.jpg/png>
-  conf: 0.25         (optional)
-  iou: 0.45          (optional)
-  imgsz: 512         (optional)
-  mask_alpha: 0.5    (optional)
-  show_boxes: true   (optional)
-  return_overlay: true (optional)
-```
-**Response:**
+**Response (example):**
+
 ```json
 {
-  "counts": {"Fake": 3},
-  "overlay_png_base64": "<base64-png>"
+  "predictions": {
+    "classification_ai_vs_real": {
+      "summary": { "frames_total": 1, "frames_ai": 1, "frames_real": 0 },
+      "opinion": "Top-1: AI (92.1%)."
+    },
+    "classification_background_tampering": {
+      "summary": { "frames_total": 1, "frames_forged": 1, "frames_original": 0 },
+      "opinion": "Background tampering detected (87%)."
+    },
+    "segmentation_face_authentication": {
+      "counts": { "total_faces": 2, "fake_faces": 1, "real_faces": 1 },
+      "opinion": "1 fake and 1 real face detected."
+    },
+    "segmentation_forgery_types": {
+      "counts": { "splicing": 2, "enhancement": 1, "copy_move": 0, "removal": 0 },
+      "opinion": "Splicing + Enhancement detected."
+    }
+  },
+  "analysis": "AI-generated with background tampering and edits.",
+  "card": {
+    "Images": {
+      "Photo": "92% AI",
+      "Creator": "AI",
+      "Manipulation": "Yes",
+      "Type": "Background + Splicing + Enhancement",
+      "Date created": "27/09/2025"
+    }
+  },
+  "overlays": {
+    "face_overlay": "face_analysis_overlay.png",
+    "forgery_overlay": "forensic_overlay.png"
+  }
 }
-```
-
-### C) Image — Compare (Seg + Cls)
-```
-POST /predict/image/compare
-form-data:
-  file: <image.jpg/png>
-  seg_conf: 0.25, seg_iou: 0.45, seg_imgsz: 512
-  cls_imgsz: 384
-  topk: 2, min_prob: 0.15
-  return_overlay: true, mask_alpha: 0.5, show_boxes: true
-```
-**Response:**
-```json
-{
-  "seg_counts": {"Fake": 2},
-  "cls_topk": [{"label":"AI","prob":0.81},{"label":"Real","prob":0.19}],
-  "verdict": "AI-generated and also edited (both signals present).",
-  "overlay_png_base64": "<base64-png>"
-}
-```
-
-### D) Video — Segmentation
-```
-POST /predict/video/seg
-form-data:
-  file: <video.mp4>
-  frame_stride: 15, max_frames: 60, batch_size: 32
-  conf: 0.25, iou: 0.45, imgsz: 512
-  return_overlays: true, mask_alpha: 0.5, show_boxes: true
-```
-
-### E) Video — Classification
-```
-POST /predict/video/cls
-form-data:
-  file: <video.mp4>
-  frame_stride: 15, max_frames: 60, batch_size: 32
-  imgsz: 384
-  topk: 2, min_prob: 0.15
-  return_overlays: true
-```
-
-### F) Video — Compare (Seg + Cls)
-```
-POST /predict/video/compare
-form-data:
-  file: <video.mp4>
-  frame_stride: 15, max_frames: 60, batch_size: 32
-  seg_imgsz: 512, seg_conf: 0.25, seg_iou: 0.45
-  cls_imgsz: 384
-  topk: 2, min_prob: 0.15
-  return_overlays: true
 ```
 
 ---
 
-## 6) Quick cURL examples
+### B) Video
+
+```
+POST /predict/video
+form-data:
+  file: <video.mp4>
+  type_hint: "background / action"   # optional
+  frame_stride: 15, max_frames: 60, batch_size: 32  # sampling config
+```
+
+**Response (example):**
+
+```json
+{
+  "predictions": {
+    "classification_ai_vs_real": {
+      "summary": { "frames_total": 30, "frames_ai": 18, "frames_real": 12 },
+      "opinion": "Top-1 across frames: AI (~82%)."
+    },
+    "classification_background_tampering": {
+      "summary": { "frames_total": 30, "frames_forged": 11, "frames_original": 19 },
+      "opinion": "Background tampering detected."
+    },
+    "segmentation_face_authentication": {
+      "counts": { "total_faces": 45, "fake_faces": 14, "real_faces": 31 },
+      "opinion": "Faces detected in 20/30 frames."
+    },
+    "segmentation_forgery_types": {
+      "counts": { "splicing": 7, "copy_move": 2, "enhancement": 5, "removal": 0 },
+      "opinion": "Splicing and Enhancement detected in several frames."
+    }
+  },
+  "analysis": "AI-generated video with background tampering and edits.",
+  "card": {
+    "Video": {
+      "Images": "82% AI",
+      "Creator": "AI",
+      "Manipulation": "Yes",
+      "Type": "Background + Splicing + Enhancement",
+      "Date created": "27/09/2025"
+    }
+  },
+  "overlays": {}
+}
+```
+
+---
+
+## 6) Quick examples
 
 ```bash
-# Image classification
-curl -X POST http://localhost:8000/predict/image/cls   -F "file=@/path/to/image.jpg"   -F "topk=2" -F "min_prob=0.15"
+# Image
+curl -X POST http://localhost:8000/predict/image   -F "file=@/path/to/image.jpg"
 
-# Image segmentation
-curl -X POST http://localhost:8000/predict/image/seg   -F "file=@/path/to/image.jpg"   -F "conf=0.25" -F "iou=0.45" -F "imgsz=512"
+# Video
+curl -X POST http://localhost:8000/predict/video   -F "file=@/path/to/video.mp4"
 ```
 
 ---
 
-## 7) Troubleshooting (short)
+## 7) Notes
 
-- **/health shows cls_task != classify**  
-  Your classification weights are not a classifier. Pin correct file via `.env` (e.g., `CLS_WEIGHTS_NAME=real_vs_ai_best.pt`).
+- Video responses give **frame-level counts** (e.g. 18 AI vs 12 Real).  
+- Overlays are only returned for **images** (PNG base64).  
+- If wrong model file is provided, API raises a clear error at startup.  
+- Device is auto-detected (`cuda` if available, else `cpu`).  
 
-- **Empty `topk` in /predict/image/cls**  
-  Decrease `min_prob`, or confirm the model really is a **classification** model.
+---
 
-- **CUDA not used**  
-  Set `DEVICE=auto` (default) or `cuda:0` in `.env`, and ensure CUDA is available.
-# Image-Video-Authentication
+## 8) Demo JSON Samples
+
+### Image Dummy Response
+```json
+{
+  "predictions": {
+    "classification_ai_vs_real": {
+      "summary": { "frames_total": 1, "frames_ai": 1, "frames_real": 0 },
+      "opinion": "Top-1: AI (92.1%)."
+    },
+    "classification_background_tampering": {
+      "summary": { "frames_total": 1, "frames_forged": 1, "frames_original": 0 },
+      "opinion": "Background tampering detected (87%)."
+    },
+    "segmentation_face_authentication": {
+      "counts": { "total_faces": 2, "fake_faces": 1, "real_faces": 1 },
+      "opinion": "1 fake and 1 real face detected."
+    },
+    "segmentation_forgery_types": {
+      "counts": { "splicing": 2, "enhancement": 1, "copy_move": 0, "removal": 0 },
+      "opinion": "Splicing + Enhancement detected."
+    }
+  },
+  "analysis": "AI-generated with background tampering and edits.",
+  "card": { "Images": { "Photo": "92% AI", "Creator": "AI", "Manipulation": "Yes" } },
+  "overlays": { "face_overlay": "face_analysis_overlay.png" }
+}
+```
+
+### Video Dummy Response
+```json
+{
+  "predictions": {
+    "classification_ai_vs_real": {
+      "summary": { "frames_total": 30, "frames_ai": 18, "frames_real": 12 },
+      "opinion": "Top-1 across frames: AI (~82%)."
+    },
+    "classification_background_tampering": {
+      "summary": { "frames_total": 30, "frames_forged": 11, "frames_original": 19 },
+      "opinion": "Background tampering detected."
+    },
+    "segmentation_face_authentication": {
+      "counts": { "total_faces": 45, "fake_faces": 14, "real_faces": 31 },
+      "opinion": "Faces detected in 20/30 frames."
+    },
+    "segmentation_forgery_types": {
+      "counts": { "splicing": 7, "copy_move": 2, "enhancement": 5, "removal": 0 },
+      "opinion": "Splicing and Enhancement detected in several frames."
+    }
+  },
+  "analysis": "AI-generated video with background tampering and edits.",
+  "card": { "Video": { "Images": "82% AI", "Creator": "AI", "Manipulation": "Yes" } },
+  "overlays": {}
+}
+```
