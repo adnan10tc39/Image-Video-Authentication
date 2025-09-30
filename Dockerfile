@@ -1,31 +1,48 @@
-# Use lightweight Python base
+# Use official slim Python base (Python 3.11)
 FROM python:3.11-slim
 
-# Set working directory
-WORKDIR /app
+# metadata
+LABEL maintainer="development@myairpbotics.com"
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    MODELS_DIR=/models \
+    DEVICE=auto
 
-# Install system dependencies (needed for PyTorch, OpenCV, etc.)
+# system deps commonly required for image/video processing and building wheels
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    ffmpeg \
-    libsm6 \
-    libxext6 \
     git \
-    curl \
- && rm -rf /var/lib/apt/lists/*
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy requirement file and install deps
-COPY requirments.txt .
+# create app user (non-root) and workdir
+RUN useradd --create-home --shell /bin/bash appuser
+WORKDIR /app
+COPY --chown=appuser:appuser requirments.txt /app/requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt
+# install Python deps
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && pip --no-cache-dir install -r /app/requirements.txt
 
-# Copy application code
-COPY . .
+# copy application code (do not copy models; mount models at runtime)
+COPY --chown=appuser:appuser . /app
 
-# Expose FastAPI port
+# make sure models directory exists and is writable by the appuser
+RUN mkdir -p ${MODELS_DIR} && chown -R appuser:appuser ${MODELS_DIR}
+
+# switch to non-root user
+USER appuser
+
+# expose port used by uvicorn
 EXPOSE 8000
 
-# Default command: run FastAPI server
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Healthcheck (runs as root in container runtime, but many orchestrators ignore this user constraint)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
+  CMD curl -f http://127.0.0.1:8000/health || exit 1
+
+# default command
+# you can override CMD at docker run to change host/port or enable workers
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
