@@ -1,49 +1,35 @@
-# Use official slim Python base (Python 3.11)
+# Use lightweight Python base
 FROM python:3.11-slim
 
-# metadata
-LABEL maintainer="development@myairpbotics.com"
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    MODELS_DIR=/models \
-    DEVICE=auto
+# Set working directory
+WORKDIR /app
 
-# system deps commonly required for image/video processing and building wheels
+# Install system dependencies (needed for PyTorch, OpenCV, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    git \
     ffmpeg \
-    libgl1 \
-    libglib2.0-0 \
-    ca-certificates \
-    file \
-    && rm -rf /var/lib/apt/lists/*
+    libsm6 \
+    libxext6 \
+    git \
+    curl \
+ && rm -rf /var/lib/apt/lists/*
 
-# create app user (non-root) and workdir
-RUN useradd --create-home --shell /bin/bash appuser
-WORKDIR /app
-COPY --chown=appuser:appuser requirments.txt /app/requirements.txt
+# Copy requirement file and install deps
+COPY requirements.txt .
 
-# install Python deps
-RUN python -m pip install --upgrade pip setuptools wheel \
-    && pip --no-cache-dir install -r /app/requirements.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
 
-# copy application code (do not copy models; mount models at runtime)
-COPY --chown=appuser:appuser . /app
+# Copy application code
+COPY app.py .
 
-# make sure models directory exists and is writable by the appuser
-RUN mkdir -p ${MODELS_DIR} && chown -R appuser:appuser ${MODELS_DIR}
+COPY . .
 
-# switch to non-root user
-USER appuser
+COPY models/ ./models/
 
-# expose port used by uvicorn
+# Expose FastAPI port
 EXPOSE 8000
 
-# Healthcheck (runs as root in container runtime, but many orchestrators ignore this user constraint)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
-  CMD curl -f http://127.0.0.1:8000/health || exit 1
-
-# default command
-# you can override CMD at docker run to change host/port or enable workers
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Default command: run FastAPI server
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
