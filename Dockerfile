@@ -32,4 +32,4 @@ COPY models/ ./models/
 EXPOSE 8000
 
 # Default command: run FastAPI server
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
