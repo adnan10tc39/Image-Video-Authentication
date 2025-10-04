@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     ca-certificates \
+    file \
     && rm -rf /var/lib/apt/lists/*
 
 # create app user (non-root) and workdir
