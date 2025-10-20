@@ -3,7 +3,7 @@ name: Build and Push
 on:
   push:
     branches:
-      - main
+      - authentication
 
 jobs:
   build:
@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
+        with:
+          lfs: true
       - name: Set image tag
         run: echo "IMAGE_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
       - name: Setup python
@@ -24,7 +26,7 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }} 
       - name: Build Docker image
         run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/curation-ai-api-service:$IMAGE_TAG .
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/image-video-auth:$IMAGE_TAG .
       - name: Push Docker image
         run: |
-          docker push ${{ secrets.DOCKER_USERNAME }}/curation-ai-api-service:$IMAGE_TAG
+          docker push ${{ secrets.DOCKER_USERNAME }}/image-video-auth:$IMAGE_TAG
