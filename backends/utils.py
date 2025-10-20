@@ -110,6 +110,8 @@ def get_models():
         FORG_MODEL = YOLO(str(_resolve(settings.FORG_WEIGHTS, settings.FORG_WEIGHTS_NAME)))
     if BG_MODEL is None:
         BG_MODEL   = YOLO(str(_resolve(settings.BG_WEIGHTS,   settings.BG_WEIGHTS_NAME)))  # YOLO cls
+    
+
     return SEG_MODEL, CLS_MODEL, FORG_MODEL, BG_MODEL
 
 # -------- ELA helpers used by BG YOLO model
@@ -338,20 +340,115 @@ def format_date_from_path(path: str) -> str:
     except Exception: ts = os.path.getmtime(path)
     return datetime.datetime.fromtimestamp(ts).strftime("%d/%m/%Y")
 
-def sample_video_frames(file_bytes: bytes, frame_stride: int, max_frames: int):
-    with NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
-        tmp.write(file_bytes); tmp_path = tmp.name
+def sample_video_frames(
+    file_bytes: bytes,
+    frame_stride: int,
+    max_frames: int,
+    sample_fps: float = None,        # NEW: if set, overrides frame_stride
+    uniform: bool = True             # NEW: uniform sampling across duration
+):
+    """
+    Improved sampler:
+      - If sample_fps is set: sample ~sample_fps uniformly.
+      - Else: interpret frame_stride as 'every Nth frame'.
+      - Uses random-access jumps via CAP_PROP_POS_FRAMES when possible to avoid decoding all frames.
+      - Caps to max_frames and preserves RGB order.
+
+    Returns: List[np.ndarray] RGB frames.
+    """
+    from tempfile import NamedTemporaryFile
+    tmp = NamedTemporaryFile(delete=False, suffix=".mp4")
+    tmp.write(file_bytes); tmp_path = tmp.name; tmp.close()
+
     cap = cv2.VideoCapture(tmp_path)
     if not cap.isOpened():
-        os.remove(tmp_path); raise RuntimeError("Could not open video.")
-    frames_rgb, idx = [], 0
-    while True:
-        ok, fr = cap.read()
-        if not ok: break
-        if idx % int(frame_stride) == 0 and fr is not None:
+        os.remove(tmp_path)
+        raise RuntimeError("Could not open video.")
+
+    try:
+        total_frames_prop = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        # fallback if count is unknown
+        if total_frames_prop <= 0:
+            # sequential scan to count frames quickly (rare)
+            cnt = 0
+            while True:
+                ok, _ = cap.read()
+                if not ok: break
+                cnt += 1
+            total_frames_prop = cnt
+            cap.release()
+            cap = cv2.VideoCapture(tmp_path)
+
+        # Decide sampling indices
+        if sample_fps and fps > 0:
+            # target about sample_fps over full duration
+            duration_sec = total_frames_prop / fps
+            num = min(max_frames, int(round(duration_sec * sample_fps)) or 1)
+            idxs = np.linspace(0, max(0, total_frames_prop-1), num=num, dtype=np.int64)
+        elif uniform:
+            # uniform using stride hint as upper bound
+            step = max(1, int(frame_stride))
+            # tentative indices by stride, then cap to max_frames
+            tentative = np.arange(0, total_frames_prop, step, dtype=np.int64)
+            if len(tentative) > max_frames:
+                idxs = np.linspace(0, tentative[-1], num=max_frames, dtype=np.int64)
+            else:
+                idxs = tentative
+        else:
+            # legacy behavior: every Nth frame until max_frames
+            step = max(1, int(frame_stride))
+            idxs = np.arange(0, min(total_frames_prop, step*max_frames), step, dtype=np.int64)
+
+        # Read frames by seeking — avoids decoding everything
+        frames_rgb = []
+        last_ok_index = -1
+        for target in idxs:
+            # Some codecs/containers seek coarsely; a small guard loop helps.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(target))
+            ok, fr = cap.read()
+            if not ok and last_ok_index >= 0:
+                # try a small forward scan
+                tries = 0
+                while not ok and tries < 3:
+                    ok, fr = cap.read()
+                    tries += 1
+            if not ok:
+                continue
             frames_rgb.append(cv2.cvtColor(fr, cv2.COLOR_BGR2RGB))
-            if len(frames_rgb) >= int(max_frames): break
-        idx += 1
-    cap.release(); os.remove(tmp_path)
-    if not frames_rgb: raise RuntimeError("No frames sampled.")
-    return frames_rgb
+            last_ok_index = int(target)
+            if len(frames_rgb) >= int(max_frames):
+                break
+
+        if not frames_rgb:
+            raise RuntimeError("No frames sampled.")
+
+        return frames_rgb
+
+    finally:
+        cap.release()
+        os.remove(tmp_path)
+
+def cls_predict_simple(model, pil_rgb):
+    """
+    Ultralytics YOLOv8-cls parity with your separate test:
+    - call as model(image) (no imgsz override)
+    - read probs.top1 / top1conf
+    - return (class_name, confidence)
+    """
+    with torch.no_grad():
+        res = model(pil_rgb)[0]  # SAME as your separate code path
+    probs = res.probs
+    idx = int(probs.top1)
+    conf = float(probs.top1conf)
+    names = res.names if hasattr(res, "names") else model.names
+    class_name = names[idx] if isinstance(names, dict) else str(idx)
+    return class_name, conf
+
+def to_data_uri_png_from_result(result, mask_alpha=0.5, boxes=True) -> str:
+    """Return data:image/png;base64,... for a YOLO result visualization."""
+    rgb = annotate_to_rgb(result, mask_alpha=mask_alpha, boxes=boxes)
+    b64 = encode_png_rgb(rgb)
+    return f"data:image/png;base64,{b64}"
+
+

@@ -32,10 +32,14 @@ async def predict_video(
     mask_alpha: float = Form(0.5),
     show_boxes: bool  = Form(True),
     regions_max_per_frame: int = Form(8),
+    sample_fps: float = Form(None),           # NEW
+    uniform: bool = Form(True),               # NEW
 ):
     return await predict_video_pipeline(
         file=file, type_hint=type_hint,
         frame_stride=frame_stride, max_frames=max_frames, batch_size=batch_size,
         mask_alpha=mask_alpha, show_boxes=show_boxes,
         regions_max_per_frame=regions_max_per_frame,
+        sample_fps=sample_fps, uniform=uniform,      # NEW
     )
+
