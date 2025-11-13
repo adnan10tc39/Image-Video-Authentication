@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     FORG_WEIGHTS_NAME: Optional[str] = None
     BG_WEIGHTS_NAME: Optional[str] = "background_forgery.pt"  # updated to YOLO .pt
 
-    DEVICE: str = "auto"
+    DEVICE: str = "0"
 
     SEG_IMGSZ: int = 640
     SEG_CONF: float = 0.25
@@ -79,10 +79,34 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# def resolve_device(choice: str):
+#     if choice and choice.lower().startswith("auto"):
+#         return 0 if torch.cuda.is_available() else "cpu"
+#     return choice or ("cpu")
 def resolve_device(choice: str):
-    if choice and choice.lower().startswith("auto"):
-        return 0 if torch.cuda.is_available() else "cpu"
-    return choice or ("cpu")
+    """
+    Map config string to a torch/YOLO compatible device.
+    """
+    if not choice:
+        # fall back to auto
+        return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    choice_str = str(choice).lower()
+
+    # auto mode
+    if choice_str.startswith("auto"):
+        return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    # numeric GPU index, e.g. "0", "1"
+    if choice_str.isdigit():
+        idx = int(choice_str)
+        if torch.cuda.is_available():
+            return f"cuda:{idx}"
+        else:
+            return "cpu"
+
+    # already something like "cuda:0" or "cpu"
+    return choice
 
 DEVICE = resolve_device(settings.DEVICE)
 
