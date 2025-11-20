@@ -5,7 +5,8 @@
 import os
 from pathlib import Path
 from uuid import uuid4
-from typing import Optional, Any
+from typing import Optional, Any, Union
+from typing import Literal
 
 from fastapi import (
     FastAPI,
@@ -24,6 +25,8 @@ from backends.image_pipeline import predict_image_pipeline
 from backends.video_pipeline import predict_video_pipeline
 from backends.job_queue import JobManager, JobRecord
 
+from io import BytesIO
+
 
 # =========================================================
 #   CONFIG & SECURITY
@@ -32,6 +35,7 @@ from backends.job_queue import JobManager, JobRecord
 from dotenv import load_dotenv
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
+VIDEO_SYNC_THRESHOLD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 # Security
 security = HTTPBearer()
@@ -105,6 +109,14 @@ class VideoJobSubmissionResponse(BaseModel):
         default=None,
         description="Endpoint to poll for job status.",
     )
+
+class VideoImmediateResponse(BaseModel):
+    mode: Literal["immediate"] = "immediate"
+    result: Any
+
+
+class VideoQueuedResponse(VideoJobSubmissionResponse):
+    mode: Literal["queued"] = "queued"
 
 
 class JobStatusResponse(BaseModel):
@@ -194,7 +206,10 @@ async def _shutdown_job_manager() -> None:
 #   VIDEO ENDPOINT (ENQUEUE JOB LIKE /research)
 # =========================================================
 
-@app.post("/predict/video", response_model=VideoJobSubmissionResponse)
+@app.post(
+    "/predict/video",
+    response_model=Union[VideoImmediateResponse, VideoQueuedResponse],
+)
 async def predict_video(
     request: Request,
     file: UploadFile = File(...),
@@ -210,20 +225,46 @@ async def predict_video(
     token: str = Depends(verify_token),
 ):
     """
-    Job-based video prediction (similar to /research in helping API):
-      1. Save uploaded video to disk
-      2. Enqueue a background job in JobManager
-      3. Return job_id + status_url
+    Video prediction:
+
+    - If file size <= 10MB: process synchronously (no queue) and return result immediately.
+    - If file size > 10MB: enqueue job and return job_id + status_url.
     """
 
-    # 1) Save uploaded video to disk
+    # Read file content once
+    content: bytes = await file.read()
+    file_size = len(content)
+
+    # --------- SMALL VIDEOS: process synchronously ---------
+    if file_size <= VIDEO_SYNC_THRESHOLD_BYTES:
+        # Rebuild an UploadFile-like object backed by memory
+        buffer = BytesIO(content)
+        upload = FastAPIUploadFile(filename=file.filename, file=buffer)
+
+        result = await predict_video_pipeline(
+            file=upload,
+            type_hint=type_hint,
+            frame_stride=frame_stride,
+            max_frames=max_frames,
+            batch_size=batch_size,
+            mask_alpha=mask_alpha,
+            show_boxes=show_boxes,
+            regions_max_per_frame=regions_max_per_frame,
+            sample_fps=sample_fps,
+            uniform=uniform,
+        )
+
+        return VideoImmediateResponse(result=result)
+
+    # --------- LARGE VIDEOS: enqueue job ---------
+    # Save uploaded video to disk
     suffix = Path(file.filename).suffix or ".mp4"
     video_path = UPLOAD_DIR / f"{uuid4().hex}{suffix}"
 
     with video_path.open("wb") as f:
-        f.write(await file.read())
+        f.write(content)
 
-    # 2) Enqueue job with all needed parameters
+    # Build payload for background worker
     payload = {
         "video_path": str(video_path),
         "type_hint": type_hint,
@@ -247,9 +288,8 @@ async def predict_video(
             pass
         raise HTTPException(status_code=500, detail=str(e))
 
-    # 3) Return job id + URL to poll
     status_url = str(request.url_for("video_job_status", job_id=job_id))
-    return VideoJobSubmissionResponse(
+    return VideoQueuedResponse(
         job_id=job_id,
         status_url=status_url,
     )
