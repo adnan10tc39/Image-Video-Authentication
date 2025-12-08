@@ -197,7 +197,7 @@ async def predict_video_pipeline(
             },
             "segmentation_face_authentication": {
                 "counts": {
-                    "total_faces": total_faces,
+                    "total_faces": total_fake_faces + total_real_faces,
                     "fake_faces": total_fake_faces,
                     "real_faces": total_real_faces
                 },
