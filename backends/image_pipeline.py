@@ -75,7 +75,7 @@ async def predict_image_pipeline(
             },
             "segmentation_face_authentication": {
                 "counts": {
-                    "faces_detected": sum(1 for r in seg_regions if "face" in str(r.get("label","")).lower()),
+                    "faces_detected": sum(1 for r in seg_regions if "fake" in str(r.get("label","")).lower()) + sum(1 for r in seg_regions if "real" in str(r.get("label","")).lower()),
                     "fake_faces":     sum(1 for r in seg_regions if "fake" in str(r.get("label","")).lower()),
                     "real_faces":     sum(1 for r in seg_regions if "real" in str(r.get("label","")).lower()),
                 },
